@@ -1,0 +1,78 @@
+image: alpine:latest
+
+services:
+  - postgres:12.2-alpine
+
+variables:
+  POSTGRES_DB: pocatest
+  POSTGRES_USER: pocatest
+  POSTGRES_PASSWORD: "pocatest"
+  POSTGRES_HOST_AUTH_METHOD: trust
+
+stages:
+  - test
+  - build-dockerfile
+  - build-dockerimage
+  - deploy
+
+test:
+  stage: test
+  script:
+    - apk add openjdk11
+    - apk add sbt --repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing
+    - sbt clean coverage test coverageReport
+
+build-dockerfile:
+  stage: build-dockerfile
+  script:
+    - apk add openjdk11
+    - apk add sbt --repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing
+    - sbt sbtVersion  # print installed version
+    - sbt docker:stage  # package the application
+  artifacts:
+    paths:
+      - target/docker/stage
+    expire_in: 1 hour
+  only:
+    refs:
+      - master
+
+build-dockerimage:
+  stage: build-dockerimage
+  image:
+    name: gcr.io/kaniko-project/executor:debug  # see https://docs.gitlab.com/ce/ci/docker/using_kaniko.html
+    entrypoint: [""]
+  script:
+    # With vanilla docker you would be using:
+    # docker build --tag poca-2020:latest --file target/docker/stage/Dockerfile target/docker/stage
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"auth\":\"`echo -n $CI_USER_NAME:$CI_REGISTRY_TOKEN | base64`\"}}}" > /kaniko/.docker/config.json
+    - mkdir image-digest
+    - /kaniko/executor --context target/docker/stage --digest-file image-digest/content --dockerfile target/docker/stage/Dockerfile --destination $CI_REPO_TOKEN/poca-2020:latest
+    - cat image-digest/content
+  only:
+    refs:
+      - master
+  artifacts:
+    paths:
+      - image-digest/content
+    expire_in: 1 hour
+
+deploy:
+  stage: deploy
+  script:
+    - cat image-digest/content
+    - apk add curl
+    - mkdir terraform_install
+    - cd terraform_install
+    - curl -OJ https://releases.hashicorp.com/terraform/0.13.3/terraform_0.13.3_linux_amd64.zip
+    - unzip terraform_0.13.3_linux_amd64.zip && rm terraform_0.13.3_linux_amd64.zip
+    - mv terraform /usr/bin/terraform
+    - cd ../terraform
+    - export TF_IN_AUTOMATION=1
+    - export TF_VAR_image_digest="@`cat ../image-digest/content`"
+    - terraform init -input=false
+    - terraform apply -input=false -auto-approve --var-file=integration.tfvars
+  only:
+    refs:
+      - master

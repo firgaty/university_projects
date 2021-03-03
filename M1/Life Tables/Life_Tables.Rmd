@@ -1,0 +1,1230 @@
+---
+title: 'Homework II: SVD analysis & Life Tables'
+author: "Betend Marie and Desmaretz Félix"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    code_folding: none
+    number_sections: yes
+    toc: yes
+  html_document:
+    fig_caption: yes
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    fig_caption: yes
+    toc: yes
+params:
+  country: France
+  country_code: fr_t
+  dirpath: LIFE_TABLES/
+  timecourse: 1945:2015
+  plotpath: PLOTS/
+---
+
+# Objectives
+
+This notebook aims at
+
+  - working with **tables** (`data.frames`, `tibbles`, `data.tables`, ...) using `dplyr` or any other query language (as provided for example by `data.table`)
+  - visualizing demographic data as provided by [Human Mortality Database organization](https://www.mortality.org).
+  - using PCA and other matrix oriented methods (CCA) to explore a multivariate datasets (lifetables may be considered as multivariate datasets)
+
+# Life tables data (ETL)
+
+Life data tables are downloaded from [https://www.mortality.org](https://www.mortality.org).
+
+See also [https://www.lifetable.de](https://www.lifetable.de).
+
+We investigate life tables describing countries from Western Europe (France, Great Britain --actually England and Wales--, Italy, the Netherlands, Spain, and Sweden) and the United States.
+
+We load the one-year lifetables for female, male and whole population for the different countries.
+
+```{r, echo=FALSE, eval=FALSE}
+# for debugging
+# params should be initialized from YAML header
+params <- list(
+    timecourse = 1945:2015,
+    dirpath = 'LIFE_TABLES/',
+    country_code = 'fr_t',
+    country = 'France',
+    plotpath = "PLOTS/")
+```
+
+```{r, echo=FALSE}
+timecourse <- eval(rlang::parse_expr(params$timecourse))
+```
+
+```{r tidyverse, message=FALSE, warning=FALSE, echo=FALSE}
+pacman::p_load(plyr)
+pacman::p_load(dplyr)
+pacman::p_load(tidyverse)
+pacman::p_load(plotly)
+pacman::p_load(foreach)
+pacman::p_load(iterators)
+pacman::p_load(DT)
+pacman::p_load(ade4)
+pacman::p_load(FactoMineR)
+pacman::p_load(factoextra)
+pacman::p_load(FactoInvestigate)
+pacman::p_load(ggfortify)
+pacman::p_load(ggthemes)
+pacman::p_load(BiocManager)
+pacman::p_load(demography)
+pacman::p_load(ggbiplot)
+pacman::p_load(corrplot)
+pacman::p_load(RSpectra)
+pacman::p_load(ggalt)
+
+#old_theme <-theme_set(theme_dark(base_size=9,
+#                                 base_family = "Helvetica"))
+
+knitr::opts_chunk$set(eval=TRUE,
+  echo=FALSE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE,
+  autodep = TRUE,
+  tidy = TRUE)
+
+```
+
+
+```{r, echo=FALSE}
+country_code <- list(fr_t='FRATNP',
+                     fr_c='FRACNP',
+                     be='BEL',
+                     gb_t='GBRTENW',
+                     gb_c='GBRCENW',
+                     nl='NLD',
+                     it='ITA',
+                     swe='SWE',
+                     sp='ESP',
+                     us='USA')
+
+countries <- c('fr_t',  'gb_t',  'nl', 'it', 'sp', 'swe', 'us')
+
+country_names <- list(fr_t='France',     # total population
+                     fr_c='France',      # civilian population
+                     be='Belgium',
+                     gb_t='England & Wales',    # total population
+                     gb_c='England & Wales',    # civilian population
+                     nl='Netherlands',
+                     it='Italy',
+                     swe='Sweden',
+                     sp='Spain',
+                     us='USA')
+
+gender_names <- list('b'='Both',
+                     'f'='Female',
+                     'm'='Male')
+```
+
+
+## Retypage
+
+We begin by retyping the columns. The schema of `df`, our universal table, is the following :
+
+| Column Name | Column Type |
+|:------------|:------------|
+|  Year       | integer     |
+|  Age        | integer     |
+|  mx         | double      |
+|  qx         | double      |
+|  ax         | double      |
+|  lx         | integer     |
+|  dx         | integer     |
+|  Lx         | integer     |
+|  Tx         | integer     |
+|  ex         | double      |
+|  Country    | factor      |
+|  Gender     | factor      |
+
+In order to avoid coercion problems and NA warnings, the column `Age` : `110+`, is processed as `Age` : `110`.
+
+```{r}
+df <- data.frame(
+  Year = integer(),
+  Age = integer(),
+  mx = double(),
+  qx = double(),
+  ax = numeric(),
+  lx = integer(),
+  dx = integer(),
+  LX = integer(),
+  Tx = integer(),
+  ex = double(),
+  Country = factor(),
+  Gender = factor()
+)
+
+for (c in countries){
+  for (e in names(gender_names)) {
+    f <- paste(params$dirpath,
+           "lt_",
+           tolower(gender_names[[e]]), "/",
+           e, "ltper_1x1", "/",
+           country_code[[c]], ".", e,"ltper_1x1.txt",
+           sep = ""
+           )
+
+    df_bis <-read.table(
+      file = f,
+      header = TRUE,
+      sep = "",
+      dec = ".",
+      skip = 2)
+
+    df_bis$Country <- country_names[[c]]
+    df_bis$Gender <- gender_names[[e]]
+
+    df <- rbind(df, df_bis)
+  }
+}
+
+df$Age <- as.integer(
+      ifelse(
+        substring(df$Age, nchar(df$Age), nchar(df$Age)) == '+',
+        substring(df$Age, 0, nchar(df$Age) - 1),
+        df$Age
+        )
+      )
+df$Year <- as.integer(substring(df$Year, 0, 4))
+df$Country <- as.factor(df$Country)
+df$Gender <- as.factor(df$Gender)
+
+# Clean
+rm(df_bis, f, c, e)
+```
+
+## Western countries in 1948
+
+Here we plot the central death rates of all Countries at all ages for the year 1948.
+
+```{r}
+g = list(c('b', 'f', 'm'))
+
+for (e in names(gender_names)) {
+  g[[e]] <- df %>%
+    filter(Year==1948, Gender==gender_names[[e]]) %>%
+    ggplot(mapping=aes(x=Age, y=mx, colour=Country, log = "y")) +
+    scale_y_log10() +
+    geom_line() +
+    ggtitle(paste("Central Death Rates for", gender_names[[e]], " gender in 1948", sep=" "))
+}
+```
+
+```{r Central Death rate 1948}
+pl <- df %>%
+    filter(Year==1948) %>%
+    ggplot(mapping=aes(x=Age, y=mx, colour=Country)) +
+    scale_y_log10() +
+    geom_line() +
+    ggtitle("Central Death Rates per Country  and per Gender in 1948") +
+    facet_grid(Gender ~ .)
+
+ggsave(pl, filename = paste(params$plotpath, "cdw.png", sep=""), device=NULL, height = 3 * 3, width = 7)
+```
+![plot](PLOTS/cdw.png)
+
+Spain and Italy have higher death rates than the other countries from 0 to 30-45.
+
+We can see that the lower central death rates are between 1 and 15 years old. Between 15 and 30 years old, this rate seems to increase a bit, and past 30 years old, the graph follows a linear function, meaning that the probability of dying past 30 years old become almost proportional to the age.
+
+We also notice that the women have lower death rates than men.
+
+```{r ratio df}
+df_ratio <- filter(df, Year == 1948, Country != "USA")[,c("Age", "mx", "Country", "Gender")]
+df_usa <- filter(df, Year == 1948, Country == "USA")[,c("Age" ,"mx", "Gender")] %>% dplyr::rename("mx.usa"="mx")
+```
+```{r ratio calc}
+df_ratio <- merge(df_ratio, df_usa, by=c("Age", "Gender"))
+df_ratio <- transform(df_ratio, log_ratio = log(mx) / log(mx.usa))
+df_ratio <- transform(df_ratio, ratio = mx / mx.usa)
+```
+```{r ratio plot}
+pl <- df_ratio %>%
+  ggplot(mapping = aes(x=Age, y=ratio, colour=Country)) +
+  scale_y_log10() +
+  ggtitle("Ratio of the CDR between european countries\n  and USA by gender in 1948") +
+  geom_line() +
+  facet_grid(Gender ~ .) +
+  labs(y="ratio  EU / USA")
+
+ggsave(pl, filename = paste(params$plotpath, "cdw3.png", sep=""), device=NULL, height = 3 * 3, width = 6)
+```
+![](PLOTS/cdw3.png)
+
+We can see that between 0 and 45 years old France, Spain and Italy have higher central death rates than USA, while the others countries have similar or lower death rates.
+Infant mortality peaks is 5 times more important in Italy and Spain than in the US.
+However, in Sweden and Netherlands the death_rates are lower than in the US, especially for men between 30 and 60 years old, the mortality is almost half of the american one.
+Between 45 and 75 years old european countries have lower death rates than america.
+Past 75 years old, the disparities sooth, except maybe for Spanish women who have a minor mortality.
+
+
+## Death rates evolution since WWII
+
+Now we will take a look at the evolution of death rates after the second world war. We plot the central death rates as a function of Age for the years 1946, 1956, 1966, ... , 2016.
+
+```{r cdw 2, warning=TRUE}
+pl <- df %>% filter(Year %in% seq(1946, 2016, by=10)) %>%
+    ggplot(mapping=aes(x=Age, y=mx, colour=as.factor(Year))) +
+    scale_y_log10() +
+    geom_line() +
+    ggtitle("Central Death Rates by country and gender from 1946 to 2016") +
+    labs(colour="Year") +
+    facet_grid(Country ~ Gender)
+```
+
+```{r}
+ggsave(pl, filename = paste(params$plotpath, "cdw2.png", sep=""), device=NULL, height = 8 * 1, width = 3*2)
+```
+
+![](PLOTS/cdw2.png)
+
+We can see that the mortality quotients  have decreased decade by decade, especially at birth, and are generally at their lowest for the year 2016.
+We observe the same phenomenon during all these years than in 1948, the central death rates are low from 1 to 15, then increase and reach a peak around 25 years old, and finally seems to increase proportionaly from 30 years old.
+We also see that women have lower death rates than men, for all countries.
+
+The peak around 25 years old is really noticeable for the men in all countries, while for women it isn't as visible. This may be cause by suicide, because while women have an higher attempted suicide risks, men tend to employ more radical methods to kill themselfs. In 2008 the male-female rate ratio of suicide in Europe was 4.0 and in the USA 3.6, according to [Suicide in the World, by Peeter Värnik](https://www.mdpi.com/1660-4601/9/3/760/htm).
+An other factor might be the higher propotion of men dying in motor vehicle crashes, for example in 2018 71% of motor vehicule deaths were men in the US. Men tend to have more high risks driving practices than women, in 2008 40% of males drivers killed on the road had BACs ≥ 0.08 percent, against 20% for females. All of these number come from this [analysis of data from the U.S. Department of Transportation's Fatality Analysis Reporting System (FARS)](https://www.iihs.org/topics/fatality-statistics/detail/gender#age-differences).
+
+This spike appears in 1956 and 1966, making the male's curve diverge from the women one, but tend to flatten in 2006 and 2016 except in the US.
+
+We observe that the mortality quotients for USA are higher than the european ones.
+
+Here the function ratio_mortality_rates` with signature
+`function(df, reference_year=1946, target_years=seq(1946, 2016, 10))` that takes as input :
+
+  - a dataframe with the same schema as `life_table`,
+  - a reference year `ref_year` and
+  - a sequence of years `target_years`
+
+and that returns a dataframe with schema:
+
+
+| Column Name | Column Type |
+|:------------|:------------|
+|  Year       | integer     |
+|  Age        | integer     |
+|  mx         | double      |
+|  mx.ref_year| double      |
+|  Country    | factor      |
+|  Gender     | factor      |
+
+where `(Country, Year, Age, Gender)` serves as a _primary key_,
+`mx` denotes the central death rate at `Age` for `Year` and `Gender` in `Country`
+whereas `mx_ref_year` denotes central death rate at `Age` for argument `reference_year`
+in `Country` for `Gender`.
+
+```{r ratio mortality rates function}
+ratio_mortality_rates <- function(df,
+                                  reference_year=1946,
+                                  target_years=seq(1946, 2016, 10)){
+  df_out <- filter(df, Year %in% target_years)[,c("Year", "Age", "mx", "Country", "Gender")]
+  df_out <- merge(df_out, filter(df, Year == reference_year)[,c("Age", "mx", "Country", "Gender")], by=c("Age", "Country", "Gender"))
+  names(df_out)[names(df_out) == "mx.y"] <- "mx.ref_year"
+  names(df_out)[names(df_out) == "mx.x"] <- "mx"
+
+  df_out
+}
+
+```
+
+```{r df rates}
+df_rates <- ratio_mortality_rates(df)
+```
+
+We now draw plots displaying the ratio  $m_{x,t}/m_{x, 1946}$ for ages $x \in 1, \ldots, 90$ and year $t$ for $t \in 1956, \ldots, 2016$ where $m_{x,t}$ is the central death rate at age $x$ during year  $t$.
+
+```{r plot rates}
+
+pl <- df_rates %>%
+  filter(Year != 1946) %>%
+  ggplot(mapping = aes(x=Age, y=mx / mx.ref_year, colour=as.factor(Year))) +
+  scale_y_log10() +
+  ggtitle("Ratio of CDR between each year and 1946 by country and gender") +
+  geom_line() +
+  #geom_xspline(mapping = aes(x=Age, y=mx / mx.ref_year, colour=as.factor(Year))) +
+  #geom_smooth()+
+  facet_grid(Country ~ Gender) +
+  labs(colour="Year", y="ratio")
+
+# df_temp <- filter(df_rates, Year != 1946)
+ggsave(pl, filename = paste(params$plotpath, "cdw5.png", sep=""), device=NULL, height = 7 * 2, width = 3 * 3)
+```
+
+![](PLOTS/cdw5.png)
+
+We observe that the central death rates has decreased for every country and every age since 1946. The infant mortality, between 0 and 15 years old, in 2016 is 10 times lower than in 1946 in European countries. It appears that the mortality of the women has decreased the most since 1946.
+
+In the US this drop is less drastic, and we can notice that around 30 for males for 2006 and 2016, the ratio doesn't follow the overall diminuition unlike in the previous decade. There is a similar phenomenon for females, but less important.
+
+
+# Trends
+
+```{r cdw 0 1 5}
+pl <- df %>%
+  filter(Age %in% c(0, 1, 5)) %>%
+  ggplot(mapping = aes(x=Year, y=mx, colour=as.factor(Age))) +
+  scale_y_log10()+
+  ggtitle("CDR for children aged 0, 1 and 5 \n as a function of time by country and gender") +
+  geom_line() +
+  facet_grid(Country ~ Gender) +
+  labs(colour="Age", y="ratio")
+ggsave(pl, filename = paste(params$plotpath, "cdw6.png", sep=""), device=NULL, height = 7 * 2, width = 3 * 3)
+```
+![](PLOTS/cdw6.png)
+On these plots, we can see that the infant mortality has decreased as the time gone by, particularly at birth and at 1 year old.
+This diminuition has speed up since 1910 - 1930 depending of the country, and we might link this to the drastic change in childbirth, and global hygiene during this period.
+
+
+```{r cdw 15, 20, 40, 60}
+
+pl <- df %>%
+  filter(Age %in% c(15, 20, 40, 60)) %>%
+  ggplot(mapping = aes(x=Year, y=mx, colour=as.factor(Age))) +
+  scale_y_log10() +
+  ggtitle("CDR for ages de 15, 20, 40 et 60 years old\n as a function of time by country and gender") +
+  geom_line() +
+  facet_grid(Country ~ Gender) +
+  labs(colour="Age", y="ratio")
+ggsave(pl, filename = paste(params$plotpath, "cdw7.png", sep=""), device=NULL, height = 7 * 2, width = 3 * 3)
+```
+![](PLOTS/cdw7.png)
+
+Once again we observe the decreasing of the mortality quotients as a function of time.
+For European countries, we notice 2 peaks more importants for men than female (aged 15, 20 and 40 years old) corresponding to WWI and WWII (and spanish civil war for Spain), except for Sweden which remaind neutral during the second conflict.
+There is also a little peak for the USA male at 20 during WWII.
+For France we can see others peaks for males and females after 1850 during the Franco-Prussian War, and other conflicts in this period.
+
+We also observe a major drop for women at 15 and 20 years old from all countries after WWII, which might be linked, as for the drop of infant mortality, to the progress made with general hygiene, delivery, and the end of barbar method such as the [Twilight Sleep](https://www.bellybelly.com.au/birth/twilight-sleep/).
+
+# Rearrangement
+
+
+Now we compute a new dataframe `df_pivot`, with primary key (`Gender`,`Year`,`Country`), with a column for each Age  from `0` to `110`.
+
+```{r pivot}
+piv <- function(df) {
+  df %>% pivot_wider(id_cols = c("Gender", "Year", "Country"), names_from=Age, values_from=mx)
+}
+```
+
+```{r rearrangement}
+df_pivot <- piv(df)
+```
+
+
+According to [https://www.lifeexpectancy.org/lifetable.shtml](https://www.lifeexpectancy.org/lifetable.shtml), life expanctancy $e(x)$  of persons alive at age $x$ is computed with the following method :
+
+$$
+e(x) = \frac {T(x)} {l(x)}
+$$
+ where
+
+$$
+l(x + 1) = l(x) \cdot e^{-m(x)}
+$$
+So we have
+$$
+l(x + 2) = l(x + 1) \cdot e^{-m(x + 1)}
+= l(x) \cdot e^{-m(x)} \cdot e^{-m(x + 1)}
+= l(x) \cdot e^{-(m(x) + m(x + 1))}
+$$
+Therefore, $\forall n \in [|1, 110 - x|]$:
+
+$$
+l(x + n) = l(x) \cdot e^{-\sum_{i = 0}^{n - 1} m(x + i)}
+$$
+And for $T(x)$:
+$$
+T(x) = \sum_{n = 0}^{110 - x} L(x + n)\\
+L(x) = \frac 1 2 (l(x) + l(x + 1)) = \frac 1 2 l(x) (1 + e^{-m(x)})
+$$
+So $\forall n \in [|1, 110 - x|]$
+$$
+L(x + n) = \frac 1 2 l(x + n) (1 + e^{-m(x + n)})\\ = \frac 1 2 l(x) \cdot e^{-\sum_{i = 0}^{n - 1} m(x + i)} (1 + e^{-m(x + n)})
+$$
+Which gives us:
+$$
+T(x) = \sum_{n = 0}^{110 - x} L(x + n) = \frac 1 2 l(x) (1 + e^{-m(x)}) + \sum_{n = 1}^{110 - x} \frac 1 2 l(x) \cdot e^{-\sum_{i = 0}^{n - 1} m(x + i)} (1 + e^{-m(x + n)})\\
+= \frac 1 2 l(x) \cdot [(1 + e^{-m(x)}) + \sum_{n = 1}^{110 - x}  e^{-\sum_{i = 0}^{n - 1} m(x + i)} \cdot (1 + e^{-m(x + n)})]
+$$
+This way:
+
+$$
+e(x) = \frac {T(x)} {l(x)} = \frac 1 2 \cdot [(1 + e^{-m(x)}) + \sum_{n = 1}^{110 - x}  e^{-\sum_{i = 0}^{n - 1} m(x + i)} \cdot (1 + e^{-m(x + n)})]
+$$
+
+__- [ ] Using `life_table_pivot` compute life expectancy at birth for each Country, Gender and Year__
+
+#Life expectancy
+
+`life_expectancy` is a function that takes as input a vector of mortality quotients, as well as an age, and returns the residual life expectancy corresponding to the vector and the given age.
+
+```{r}
+# 0 <= from < 110
+life_expectancy <- function(df, from=0, max.age = 110) {
+  m <- df[as.character(from)] # sum i = 0 -> n - 1 of m(x + i)
+  e <- 1 + exp(-m) # life expectancy
+
+  if(from < max.age)
+    for (a in as.character(c((from + 1):max.age))) {
+      e <- e + (exp(-m) * (1 + exp(-df[a])))
+      m <- m + df[a]
+    }
+  e / 2
+}
+```
+
+Then we have `life_expectancy_all`, a function that takes as input a dataframe with the same schema as  `life_table` and returns a data frame with columns `Country`, `Gender`, `Year`, `Age` defining a primary key and a column `res_lex` containing _residual life expectancy_ corresponding to the pimary key.
+
+```{r}
+life_expectancy_all <- function(df, has.country = TRUE, max.age = 110, has.gender = TRUE) {
+  cols =
+    if(has.country)
+      (if(has.gender)
+        c("Gender", "Year", "Country")
+       else
+         c("Year", "Country"))
+    else (
+      if (has.gender)
+        c("Gender", "Year")
+      else c("Year")
+      )
+
+  df_pivot <- df %>% pivot_wider(id_cols = cols,
+                                 names_from=Age,
+                                 values_from=mx)
+  for (e in c(0:max.age)) {
+    df_pivot[as.character(e)] <- life_expectancy(df_pivot, e, max.age)
+  }
+  df_expectancy <- df_pivot %>% pivot_longer(-cols,
+                                             names_to = "Age",
+                                             values_to = "res_lex")
+  df_expectancy$Age <- as.integer(df_expectancy$Age)
+  df_expectancy
+}
+```
+
+```{r life_expectancy_all}
+df_expectancy <- life_expectancy_all(df)
+```
+We plot the life expectancy at birth for each country, gender and year.
+```{r Life expectancy at birth}
+
+pl<- df_expectancy %>% filter(Age %in% c(0)) %>%
+  ggplot(mapping = aes(x=Year, y=res_lex, colour=as.factor(Gender))) +
+  ggtitle("Life expectancy at birth\n as a function of time by country and gender") +
+  geom_line() +
+  facet_grid(Country~.) +
+  labs(colour="Gender", y="Life expectancy")
+```
+```{r Life expectancy at birth save}
+ggsave(pl, filename = paste(params$plotpath, "exp_0.png", sep=""), device=NULL, height = 7 * 1.5, width = 3 * 2.25)
+```
+![](PLOTS/exp_0.png)
+Here we can see that the the life expanctancy at birth has increased a lot the past 150 years.
+There are two low peaks during the two world wars for european countries, especially for men.
+Females have higher life expectancy than males in each country.
+
+```{r retirement}
+pl <- df_expectancy %>%
+  filter(Age %in% c(60, 65)) %>%
+  ggplot(mapping = aes(x=Year, y=res_lex, colour=as.factor(Age))) +
+  ggtitle("Residual life expectancy at 60 and 65 years olds\n as a function of time by country and gender") +
+  geom_line() +
+  facet_grid(Country ~ Gender) +
+  labs(colour="Age", y="Residual life expectancy")
+```
+```{r retirement save}
+ggsave(pl, filename = paste(params$plotpath, "exp_60.png", sep=""), device=NULL, height = 7 * 1.5, width = 3 * 2.25)
+```
+
+![](PLOTS/exp_60.png)
+
+We observe that the residual life expectancy is increasing as the time goes, and this rise is going faster since circa 1975.
+We also notice that the residual life expectancy of women is higher than the men's one for each country.
+The US is once again a little bellow european countries, with the lowest life expectancy for both men and women.
+In Netherlands we observe a little decreasing in the residual life expectancy between 1950 and 1970 before increasing again.
+
+# PCA
+
+```{r}
+standardize <- function(df){
+  dplyr::mutate_if(df, .predicate = is.numeric, .funs = ~ ./sd(.))
+}
+```
+
+
+```{r}
+opp_log <- function(x) {log(x)}
+df_pivot_log <- cbind(df_pivot[1:3], apply(df_pivot[4:114], 2, opp_log))
+df_pivot_log <- df_pivot_log %>%filter(Year %in% c(1948:2016), Country == params$country)
+df_pivot_log.pca <- df_pivot_log %>%
+  select(-c("Year", "Gender", "Country")) %>%
+  standardize() %>%
+  prcomp(scale. = TRUE)
+
+datatable(df_pivot_log.pca %>%
+  broom::tidy(matrix="pcs"))
+ #%>% knitr::kable(format="markdown")
+```
+```{r eval=FALSE, include=FALSE}
+datatable(df_pivot_log %>%
+  dplyr::select_if(is.numeric) %>%
+  corrr::correlate() %>%
+  corrr::shave() %>%
+  corrr::fashion() %>%
+  knitr::kable(format="markdown"))
+```
+```{r}
+ df_svd <- df_pivot_log %>%
+  select(-c("Year", "Gender", "Country")) %>%
+  standardize() %>%
+  svd()
+df_svd$d
+```
+
+
+```{r}
+round((100*cumsum(df_pivot_log.pca$sdev^2)/sum(df_pivot_log.pca$sdev^2)), 2)
+```
+```{r}
+df_pivot_pca_bis <- cbind(df_pivot_log, df_pivot_log.pca$x)
+```
+```{r}
+zpca <- df_pivot_log[, 4:114] %>% prcomp()
+qplot(x =1:111, y=df_pivot_log.pca$sdev^2, geom='col')
+```
+```{r}
+#ggbiplot(df_pivot_pca)
+summary(df_pivot_log.pca)
+# ggbiplot(df_pivot_log.pca)
+ggbiplot(df_pivot_log.pca,
+         #obs.scale = 1,
+         #var.scale = 1,
+         groups = df_pivot_log$Gender,
+         ellipse = FALSE,
+         circle = TRUE) +
+  ggtitle("Biplot and correlation circle")
+ggbiplot(zpca,
+         #obs.scale = 1,
+         #var.scale = 1,
+         groups = df_pivot_log$Gender,
+         ellipse = FALSE,
+         circle = TRUE)
+```
+
+```{r}
+df_pca <- df_pivot_log %>%
+  filter(Gender %in% c("Male"))
+res.pca <- PCA(df_pca %>%
+                 select(-c("Year", "Gender", "Country")) %>%
+                 standardize(),
+               ncp = 10,
+               graph = FALSE)
+fviz_eig(res.pca, addlabels = TRUE)
+fviz_pca_var(res.pca, col.var = "contrib", gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+fviz_pca_biplot(res.pca)
+#fviz_cos2(res.pca, choice = "var", axes = 1:3)
+fviz_pca_ind(res.pca, col.ind = df_pca$Year,
+             gradient.cols = c("blue", "yellow", "red"),
+             repel = TRUE, # Avoid text overlapping (slow if many points)
+             )
+```
+On the screeplot we can see that the 3 first component have an eigenvalue >1 and explains almost 98% of variance, therefore we can reduce dimension from 114 to 3 without major loss of information.
+In fact the first component alone represent more than 89.7 % of the variance, so it could be a good unique index, but we will use Kaiser's rule.
+
+On the correlation circle we can see that all the variables are being well represented, and on the biplot that there are 3 main groups for both sex.
+
+
+```{r}
+df_pivot_log.pca.bis <- cbind(df_pivot_log, df_pivot_log.pca$x) %>% filter(Gender %in% c("Female","Male", "Both"))
+```
+
+```{r}
+
+df_pivot_log.pca.bis %>%
+  ggplot(aes(x=PC1, y=PC2)) +
+  geom_point()
+
+autoplot(df_pivot_log.pca,
+         data=df_pivot_log,
+         colour = "Gender",
+         loadings = TRUE,
+         loadings.label = TRUE,
+         )
+```
+# CCA
+
+We build a function _design_ that takes as input
+  + a dataframe like `life_table_pivot`,
+  + a couple  of countries, say `Spain` and `Sweeden`,
+  + a vector of `Year`, say `1948:1998`
+  + a `Gender` say `Female`
+  returns a matrix called $Z$ with rows corresponding to `Year` and columns
+  corresponding to couples `(Country, Age)`.
+
+```{r design}
+design <- function(df, a.countries=c("Spain", "France"), a.year=1948:1998, a.gender = "Female") {
+  df_temp <- df %>% filter(Gender==a.gender, Country %in% a.countries, Year %in% a.year) %>% select(-Gender)
+  df_temp <- df_temp %>% pivot_longer(-c("Year", "Country"), names_to = "Age", values_to = "mx")
+  df_temp <- df_temp %>% pivot_wider(id_cols = "Year", names_from = c("Country", "Age"), values_from="mx")
+  # data.matrix(
+  #   df_temp[, 2:112]
+  #   #df_temp
+  #   )
+  # df_temp
+  m <- data.matrix(df_temp)
+  rownames(m) <- m[,1]
+  m[, 2:(length(a.countries) * 111 + 1)]
+}
+```
+
+
+```{r}
+z <- design(df_pivot, c("France"), a.gender = "Male")
+res.ca<-CA(z, graph = FALSE)
+summary(res.ca)
+fviz_ca_row(res.ca, repel = TRUE)
+fviz_ca_col(res.ca
+            #,repel = TRUE
+            )
+fviz_screeplot(res.ca)
+fviz_ca_biplot(res.ca,
+               map ="rowprincipal", arrow = c(TRUE, TRUE),
+               repel = FALSE, label = "none")
+```
+We see that the chi-square statistic is high, which means that there is a strong link between the year and the couples `(Country, Age)`.
+ 91.956 % of the variation is explained by the first two dimensions, which is acceptable.
+
+On the first plot we distinguish 3 groups of year, from 1948 to early 1960, the end of 1980 to 1999, and the group formed by the years in between.
+
+On the second plot, we see that age 0 to 4 are really well represented.
+Then we have 3 main groups of age  : 0 to 43, 44 to 96 and 97 to 110 who are completely negatively correlated.
+
+
+# Lee Carter
+
+To fit a Lee-Carter model you can play with the paramaters of the following function :
+    `lee_carter <- function(df, a.country="France", a.year=1933:1995, a.gender = "Both")`
+
+To plot the fit:
+
+    `lee_carter.fit <- function(df, leca, years = NULL)`
+
+Forecast of the  $k_t$, `walks` the number of predictions years:
+
+    `leca.forecast <- lee_carter.forecast <- function(leca, walks = 50)`
+
+For the life expectancy from a forecast:
+
+    `leca.expectancy <- function(leca.forecast)`
+
+To compare with the actual value see the last plot.
+
+```{r}
+design.unique <- function(df, a.country="France", a.year=1933:1995, a.gender = "Both") {
+  df_temp <- df %>% filter(Gender==a.gender, Country==a.country, Year %in% a.year) %>% select(-c("Gender", "Country"))
+  df_temp <- df_temp %>% pivot_longer(-c("Year"), names_to = "Age", values_to = "mx")
+  df_temp <- df_temp %>% pivot_wider(id_cols = "Year", names_from ="Age", values_from="mx")
+  # data.matrix(
+  #   df_temp[, 2:112]
+  #   #df_temp
+  #   )
+  # df_temp
+  m <- data.matrix(df_temp)
+  rownames(m) <- m[,1]
+  m[, 2:112]
+}
+```
+
+```{r}
+lee_carter <- function(df, a.country="France", a.year=1933:1995, a.gender = "Both") {
+  Z <- design.unique(df, a.country, a.year, a.gender)
+  # ax <- as.matrix(colMeans(Z))
+  Z.log <- apply(Z, 2, log)
+
+  # The first thing we need is the mean log-rate for each age group.
+  Z.log.a <- colMeans(Z.log)
+  # The next step is to subtract the average age pattern a from all years.
+  for(j in 1:(ncol(Z.log))) Z.log[,j] <- Z.log[,j] - Z.log.a[j]
+  # We are now ready to compute the Singular Value Decomposition (SVD). The first column of U   times D1,1 times the first row of V' has the best rank-1 approximation to the input matrix.
+  Z.log.svd <- svd(Z.log, 1, 1)
+  Z.log.b <- Z.log.svd$v / sum(Z.log.svd$v)
+  Z.log.k <- Z.log.svd$u * sum(Z.log.svd$v) * Z.log.svd$d[1]
+
+  Z.log.trend <- data.frame(Year = a.year, k = Z.log.k)
+  structure(
+    list(Z = Z.log,
+         a = Z.log.a,
+         b = Z.log.b,
+         k = Z.log.k,
+         trend = Z.log.trend,
+         start_year = head(a.year, n=1),
+         end_year = tail(a.year, n=1),
+         Country = a.country,
+         Gender = a.gender,
+         Age = 0:110
+         )
+    , class="lee_carter")
+}
+```
+
+```{r}
+lee_carter.fit <- function(df, leca, a.svd, years = NULL) {
+  if (is.null(years)) {
+    years = c(leca$start_year, leca$end_year)
+  }
+
+  df_temp <- df %>%
+    filter(Gender == leca$Gender, Country == leca$Country) %>%
+    filter(Year %in% years) %>%
+    mutate(
+      Year = factor(Year),
+      fit = c(
+        sapply(years,
+               function (x) {
+                 exp(leca$a + leca$b * leca$k[x - leca$start_year + 1])
+                 }
+               )))
+
+  df_temp <- merge(df_temp,
+                   a.svd %>%
+                     filter(Year %in% years),
+                   by = c("Year", "Age"))
+
+  ggplot(df_temp, aes(Age, color = Year)) +
+    geom_line(aes(y = mx, linetype = "Observed")) +
+    geom_line(aes(y = fit, linetype = "Lee-Carter Fit")) +
+    geom_line(aes(y = svd_mx, linetype = "Truncated rank 2 SVD Fit")) +
+    scale_y_log10() +
+    ggtitle(
+      paste("Lee-Carter and truncated rank 2 SVD fits of ", leca$Gender,
+            " from ", leca$Country ,
+            "for years", paste(years, collapse=", ")
+            )
+      ) +
+    scale_linetype_manual("linetype",
+                          values = c("Observed"=1,
+                                     "Lee-Carter Fit"=2,
+                                     "Truncated rank 2 SVD Fit" = 3)
+                          )
+}
+```
+
+
+```{r}
+lee_carter.forecast <- function(leca, predict = 50) {
+  t <- ts(leca$k)
+  rw <- rwf(t, drift = TRUE, h = predict)
+
+  out = data.frame(
+    Year = integer(),
+    Age = integer(),
+    Country = factor(),
+    Gender = factor(),
+    fit = double(),
+    low = double(),
+    hi = double()
+  )
+
+  for (i in 1:predict) {
+    forecast <- data.frame(
+      Year = rep(leca$end_year + i, length(leca$Age)),
+      Country = rep(leca$Country, length(leca$Age)),
+      Gender = rep(leca$Gender, length(leca$Age)),
+      Age = leca$Age,
+      fit = exp(leca$a + leca$b * rw$mean[i]),
+      low = exp(leca$a + leca$b * rw$lower[i]),
+      hi  = exp(leca$a + leca$b * rw$upper[i])
+      )
+    #print(forecast)
+    out <- rbind(out, forecast)
+  }
+  out
+}
+```
+
+```{r}
+leca.expectancy <- function(leca.forecast, years = seq(2000, 2015, by=5)) {
+  l <- leca.forecast %>% filter(Year %in% years)
+  g <- l$Gender
+  c <- l$Country
+  l <- l %>% select(c("Year", "Age", "fit", "hi", "low"))
+  f <- l %>% pivot_longer(-c("Year", "Age"), names_to = "Gender", values_to = "mx")
+  f <- life_expectancy_all(f, has.country = FALSE)
+  names(f)[names(f) == "Gender"] <- "Type"
+  f <- f %>%
+  pivot_wider(id_cols = c("Year", "Age"), names_from = "Type", values_from = "res_lex")
+  f <- cbind(f, Gender=rep(g[[1]], nrow(f)), Country=rep(c[[1]], nrow(f)))
+}
+```
+
+```{r}
+leca.forecast.merge <- function(leca.forecast, df) {
+  merge(leca.forecast,
+        df %>% select(c("Year", "Age", "Gender", "Country", "mx")),
+        by = c("Year", "Age", "Gender", "Country"))
+}
+leca.forecast.expectancy.merge <- function(leca.forecast.expectancy, df_expectancy) {
+  merge(leca.forecast.expectancy,
+        df_expectancy,
+        by = c("Year", "Age", "Gender", "Country"))
+}
+```
+
+```{r}
+lee_carter.all <- function(df, a.country="France", a.year=1933:1995, a.gender = c("Both", "Female", "Male")) {
+  l = list()
+  for (g in a.gender) {
+    l[[g]] = lee_carter(df, a.country, a.year, g)
+  }
+  structure(list(genders = a.gender, leca = l), class = "lee_carter.all")
+}
+
+```
+
+```{r}
+lee_carter.forecast.all <- function(leca.all, predict = 50) {
+  out = data.frame(
+    Year = integer(),
+    Age = integer(),
+    Country = factor(),
+    Gender = factor(),
+    fit = double(),
+    low = double(),
+    hi = double()
+  )
+
+  for (g in leca.all$genders) {
+    t <- lee_carter.forecast(leca.all$leca[[g]], predict)
+    out <- rbind(out, t)
+  }
+  out
+}
+```
+
+```{r}
+leca.forecast.plot <- function(leca.forecast, df, year = 2015, country = "France") {
+  g <- leca.forecast.merge(leca.forecast, df) %>%
+  filter(Year %in% year, Country == country) %>%
+  ggplot(aes(x = Age, color = as.factor(Gender))) +
+  geom_ribbon(aes(ymin = low, ymax = hi), fill="grey", linetype = "blank") +
+  geom_line(aes(y = fit, linetype = "Lee-Carter Fit")) +
+  geom_line(aes(y = mx, linetype = "Observed")) +
+  scale_y_log10()
+
+  if (length(year) > 1) {
+    g <- g + facet_grid(Gender ~ Year)
+  } else {
+    g <- g + facet_grid(Gender ~ .)
+  }
+
+  g <- g + scale_linetype_manual("mx",values=c("Observed"=2,"Lee-Carter Fit"=1)) +
+  ggtitle(paste("Lee-Carter forecast for", country, "for", paste(year, collapse=", "), sep = " ")) +
+  labs(color = "Gender", y="log mortality rates")
+  g
+}
+```
+
+```{r}
+leca.expectancy.all <- function(leca.forecast.all, years = seq(2000, 2015, by = 5)) {
+  genders = c("Both", "Female", "Male")
+
+  out <- data.frame(
+    Year = integer(),
+    Country = factor(),
+    Gender = factor(),
+    Age = integer(),
+    fit = numeric(),
+    low = numeric(),
+    hi = numeric()
+  )
+
+  for (g in genders) {
+    l <- leca.forecast.all %>% filter(Gender == g)
+    l <- leca.expectancy(l, years)
+    out <- rbind(out, l)
+  }
+  out
+}
+```
+
+```{r}
+leca.forecast.expectancy.plot <- function(leca.forecast,
+                                          df_expectancy,
+                                          year = 2015,
+                                          country = "France") {
+  g <- leca.forecast.expectancy.merge(leca.forecast, df_expectancy) %>%
+  filter(Year %in% year, Country == country) %>%
+  ggplot(aes(x = Age, color = as.factor(Gender))) +
+  geom_ribbon(aes(ymin = low, ymax = hi), fill="grey", linetype = "blank") +
+  geom_line(aes(y = fit, linetype = "Lee-Carter Fit")) +
+  geom_line(aes(y = res_lex, linetype = "Observed"))
+
+  if (length(year) > 1) {
+    g <- g + facet_grid(Gender ~ Year)
+  } else {
+    g <- g + facet_grid(Gender ~ .)
+  }
+
+  g <- g + scale_linetype_manual("mx",values=c("Observed"=2,"Lee-Carter Fit"=1)) +
+  ggtitle(paste("Lee-Carter residual life expectancy forecast for", country, "for", paste(year, collapse=", "), sep = " ")) +
+  labs(color = "Gender", y="Residual life expectancy")
+  g
+}
+```
+
+
+```{r}
+years = 1933:1995
+country = "USA"
+
+#trunk_svd <- function(df_pivot, country = "France",  years = 1933:1995) {
+
+#SVD
+Z.tsvd.f <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Female")),
+                 2)
+Z.tsvd.m <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Male")),
+                 2)
+Z.tsvd.t <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Both")),
+                 2)
+
+#reconstruction of the estimation
+Z.recon.f <- Z.tsvd.f$u %*% diag(Z.tsvd.f$d) %*% t(Z.tsvd.f$v)
+
+Z.recon.m <- Z.tsvd.m$u %*% diag(Z.tsvd.m$d) %*% t(Z.tsvd.m$v)
+
+Z.recon.t <- Z.tsvd.t$u %*% diag(Z.tsvd.t$d) %*% t(Z.tsvd.t$v)
+
+#conversion as dataframe
+Z.recon.f <- cbind(c(0:110), Z.recon.f)
+colnames(Z.recon.f) = c("Age", years)
+Z.df.f<-as_data_frame(Z.recon.f)
+Z.df.f <- Z.df.f %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.f <- cbind(Z.df.f,
+                Gender = rep("Female", nrow(Z.df.f)),
+                Country = rep(country, nrow(Z.df.f)))
+
+Z.recon.m <- cbind(c(0:110), Z.recon.m)
+colnames(Z.recon.m) = c("Age", years)
+Z.df.m<-as_data_frame(Z.recon.m)
+Z.df.m <- Z.df.m %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.m <- cbind(Z.df.m,
+                Gender = rep("Male", nrow(Z.df.m)),
+                Country = rep(country, nrow(Z.df.m)))
+
+Z.recon.t <- cbind(c(0:110), Z.recon.t)
+colnames(Z.recon.t) = c("Age", years)
+Z.df.t <-as_data_frame(Z.recon.t)
+Z.df.t <- Z.df.t %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.t <- cbind(Z.df.t,
+                Gender = rep("Both", nrow(Z.df.t)),
+                Country = rep(country, nrow(Z.df.t)))
+
+```
+
+## US
+
+```{r}
+leca.all.us <- lee_carter.all(df_pivot, "USA")
+```
+
+```{r}
+cbind(Year = leca.all.us$leca$Both$trend[["Year"]],
+      Both = leca.all.us$leca$Both$trend[["k"]],
+      Female = leca.all.us$leca$Female$trend[["k"]],
+      Male = leca.all.us$leca$Male$trend[["k"]]) %>%
+  ggplot(aes(Year)) +
+  geom_line(aes(y = Both, color = "Both")) +
+  geom_line(aes(y = Female, color = "Female")) +
+  geom_line(aes(y = Male, color = "Male")) +
+  scale_color_discrete("color") +
+  ggtitle("Lee-Carter kappa trend for USA for years 1933-1995")
+```
+We observe that the kappa decrease, like the mortality rates.
+```{r}
+lee_carter.fit(df, leca.all.us$leca$Both, Z.df.t, c(1933, 1980))
+```
+We can see that the Lee Carter model offer a better fit than the truncated SVD.
+```{r}
+leca.forecast.all.us <- lee_carter.forecast.all(leca.all.us)
+```
+
+```{r}
+pl <- leca.forecast.plot(leca.forecast.all.us,
+                         df,
+                         year = c(2000, 2005, 2010, 2015),
+                         country ="USA")
+ggsave(pl, filename = paste(params$plotpath, "forecast_us.png", sep=""), device=NULL, height = 3 * 2, width = 5 * 2)
+```
+
+![](PLOTS/forecast_us.png)
+
+Here we see that the Lee Carter fit isn't really adjusted for women between 15 and 60, the model is a bit lower than observed, and higher than expected for men between 60 and 90 years old.
+```{r expectancy us}
+leca.forecast.expectancy.all.us <- leca.expectancy.all(leca.forecast.all.us)
+```
+
+
+```{r}
+pl <- leca.forecast.expectancy.plot(leca.forecast.expectancy.all.us,
+                                    df_expectancy,
+                                    c(2000, 2005, 2010, 2015),
+                                    "USA")
+ggsave(pl, filename = paste(params$plotpath, "forecast_us2.png", sep=""), device=NULL, height = 3 * 2, width = 5 * 2)
+```
+
+![](PLOTS/forecast_us2.png)
+ The life expectancy however is better fitted for female than male, it fit almost perfectly the women curve, while it is a bit lower than the male one.
+
+## Europe
+
+```{r}
+years = 1933:1995
+country = "France"
+
+#trunk_svd <- function(df_pivot, country = "France",  years = 1933:1995) {
+
+#SVD
+Z.tsvd.f <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Female")),
+                 2)
+Z.tsvd.m <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Male")),
+                 2)
+Z.tsvd.t <- svds(t(design.unique(df_pivot,
+                                 a.country = country,
+                                 a.year = years,
+                                 a.gender = "Both")),
+                 2)
+
+#reconstruction of the estimation
+Z.recon.f <- Z.tsvd.f$u %*% diag(Z.tsvd.f$d) %*% t(Z.tsvd.f$v)
+
+Z.recon.m <- Z.tsvd.m$u %*% diag(Z.tsvd.m$d) %*% t(Z.tsvd.m$v)
+
+Z.recon.t <- Z.tsvd.t$u %*% diag(Z.tsvd.t$d) %*% t(Z.tsvd.t$v)
+
+#conversion as dataframe
+Z.recon.f <- cbind(c(0:110), Z.recon.f)
+colnames(Z.recon.f) = c("Age", years)
+Z.df.f<-as_data_frame(Z.recon.f)
+Z.df.f <- Z.df.f %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.f <- cbind(Z.df.f,
+                Gender = rep("Female", nrow(Z.df.f)),
+                Country = rep(country, nrow(Z.df.f)))
+
+Z.recon.m <- cbind(c(0:110), Z.recon.m)
+colnames(Z.recon.m) = c("Age", years)
+Z.df.m<-as_data_frame(Z.recon.m)
+Z.df.m <- Z.df.m %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.m <- cbind(Z.df.t,
+                Gender = rep("Male", nrow(Z.df.m)),
+                Country = rep(country, nrow(Z.df.m)))
+
+Z.recon.t <- cbind(c(0:110), Z.recon.t)
+colnames(Z.recon.t) = c("Age", years)
+Z.df.t <-as_data_frame(Z.recon.t)
+Z.df.t <- Z.df.t %>% pivot_longer(-Age, names_to = "Year", values_to = "svd_mx")
+Z.df.t <- cbind(Z.df.t,
+                Gender = rep("Both", nrow(Z.df.t)),
+                Country = rep(country, nrow(Z.df.t)))
+
+#Z.df = rbind(Z.df.f, Z.df.t, Z.df.m)
+#}
+```
+
+```{r}
+leca.all <- lee_carter.all(df_pivot)
+```
+
+```{r}
+cbind(Year = leca.all$leca$Both$trend[["Year"]],
+      Both = leca.all$leca$Both$trend[["k"]],
+      Female = leca.all$leca$Female$trend[["k"]],
+      Male = leca.all$leca$Male$trend[["k"]]) %>%
+  ggplot(aes(Year)) +
+  geom_line(aes(y = Both, color = "Both")) +
+  geom_line(aes(y = Female, color = "Female")) +
+  geom_line(aes(y = Male, color = "Male")) +
+  scale_color_discrete("color") +
+  ggtitle("Lee-Carter kappa trend for France for years 1933-1995")
+```
+For Europe we see that the kappas are following once again the decrease of mortality rate, except around 1940, with the second world war.
+```{r}
+lee_carter.fit(df, leca.all$leca$Both, Z.df.t, c(1933, 1980))
+```
+We observe that the Lee Carter fit is better than the Truncated SVD, especially for men between 15 and 30.
+```{r}
+leca.forecast.all <- lee_carter.forecast.all(leca.all)
+```
+
+```{r}
+pl <- leca.forecast.plot(leca.forecast.all, df, c(2000, 2005, 2010, 2015))
+ggsave(pl, filename = paste(params$plotpath, "forecast_eu.png", sep=""), device=NULL, height = 3 * 2, width = 5 * 2)
+```
+
+![](PLOTS/forecast_eu.png)
+
+The european forecast is a bit better than the US one but is still a bit higher than observed after 75 years old.
+```{r expectancy eu}
+leca.forecast.expectancy.all <- leca.expectancy.all(leca.forecast.all)
+```
+
+```{r}
+pl <- leca.forecast.expectancy.plot(leca.forecast.expectancy.all,
+                                    df_expectancy,
+                                    c(2000, 2005, 2010, 2015))
+ggsave(pl, filename = paste(params$plotpath, "forecast_eu2.png", sep=""), device=NULL, height = 3 * 2, width = 5 * 2)
+```
+![](PLOTS/forecast_eu2.png)
+Once again we see that the life expectancy forecast fit better the women curve, and is a bit lower than expected for men.
+
+# References
+
+__Life tables and demography__
+
+- [Human Mortality Database](https://www.mortality.org)
+- [Tables de mortalité françaises, Jacques Vallin et France Meslé](https://www.lifetable.de/data/FRA/FRA000018061997CY1.pdf)
+- [Modeling and Forecasting U.S. Mortality, R.D.Lee and L.R. Carter, JASA 1992]
+- [Les dimensions de la mortalité, S. Ledermann, Jean Breas, Population, 1959]
+
+__Graphics and reporting__
+
+- [Interactive web-based data visualization with R, plotly, and shiny](https://plotly-r.com/index.html)
+- [R for Data Science](https://r4ds.had.co.nz)
+- [Layered graphics](http://vita.had.co.nz/papers/layered-grammar.pdf)
+- [Plotly](http://plotly.com/)
+
+__Tidyverse__
+
+- [tidyselect](https://tidyselect.r-lib.org/articles/tidyselect.html)
+- [dbplyr](https://cran.r-project.org/web/packages/dbplyr/vignettes/dbplyr.html)
+- [data.table](https://github.com/Rdatatable/data.table)
+- [DT](https://rstudio.github.io/DT/)
+
+__PCA, SVD, CCA__
+
+- [FactoMineR](http://factominer.free.fr/index_fr.html)
+- [ade4](http://pbil.univ-lyon1.fr/ade4/accueil.php)
+- [FactoInvestigate](http://factominer.free.fr/reporting/index_fr.html)
+- [PCA and Tidyverse](https://cmdlinetips.com/2019/05/how-to-do-pca-in-tidyverse-framework/)
+- [tidyprcomp](https://broom.tidyverse.org/reference/tidy.prcomp.html)

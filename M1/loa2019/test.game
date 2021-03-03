@@ -1,0 +1,33 @@
+#5 10
+OOOOOOOOOO
+O+       O
+O        O
+O        O
+OOOOOOOOOO
+d 2 3
+p 1 4
+c 4 4 0
+l 2 3 1 1
+
+#10 10
+OOOOOOOOOO
+O        O
+O   O    O
+O        O
+O        O
+O        O
+O        O
+O        O
+O+       O
+OOOOOOOOOO
+p 1 4
+d 1 8
+m 5 5 MON3 1 0
+c 5 4 0
+l 1 8 8 1
+
+L 0 1 1 1 4 4
+L 1 8 1 1337 0 0
+C 0 1 4
+s 0 0 0 0
+S 0 0 0 0 0 0 0 0 0

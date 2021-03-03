@@ -1,0 +1,33 @@
+[
+    {
+        "name": "poca-webserver",
+        "image": "escaladur/poca-2020:latest${IMAGE_DIGEST}",
+        "memoryReservation": 950,
+        "portMappings": [
+            {
+            "containerPort": 8080,
+            "hostPort": 80,
+            "protocol": "tcp"
+            }
+        ],
+        "cpu": 1024,
+        "essential": true,
+        "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+                "awslogs-region": "eu-west-3",
+                "awslogs-group": "poca-web",
+                "awslogs-stream-prefix": "ecs-poca"
+            }
+        },
+        "privileged": false,
+        "environment": [{
+            "name": "DB_HOST",
+            "value": "${DB_HOST}"
+        }],
+        "secrets": [{
+            "name": "DB_PASSWORD",
+            "valueFrom": "arn:aws:ssm:eu-west-3:755715305346:parameter/database/password"
+        }]
+    }
+]

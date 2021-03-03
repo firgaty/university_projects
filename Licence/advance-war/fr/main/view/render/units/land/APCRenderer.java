@@ -1,0 +1,28 @@
+package fr.main.view.render.units.land;
+
+import java.util.LinkedList;
+
+import fr.main.model.units.AbstractUnit;
+import fr.main.view.render.animations.AnimationState;
+import fr.main.view.render.sprites.ScaleRect;
+import fr.main.view.render.sprites.SpriteList;
+import fr.main.view.render.units.UnitRenderer;
+import fr.main.view.sound.MusicEngine;
+
+public class APCRenderer extends UnitRenderer.Render {
+
+  public APCRenderer (AbstractUnit unit) {
+    super (unit);
+
+    LinkedList<ScaleRect> areas = new LinkedList<>();
+    areas.add(new ScaleRect (22, 544, 14, 14, 2));
+    areas.add(new ScaleRect (44, 544, 14, 14, 2));
+    AnimationState idle = new AnimationState(new SpriteList(getDir() + "sprites.png", areas), 20);
+
+    anim.put("idleRIGHT", idle);
+    anim.setState("idleRIGHT");
+    
+    this.selected  = new MusicEngine("./assets/sound/ReconSelect.wav");
+  }
+
+}

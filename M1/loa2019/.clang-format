@@ -1,0 +1,29 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+# Language: Cpp
+DerivePointerAlignment: false
+PointerAlignment: Right
+AlignAfterOpenBracket: Align
+AccessModifierOffset: -4
+TabWidth: 4
+AllowShortBlocksOnASingleLine: true
+# AllowShortIfStatementsOnASingleLine: true
+AlwaysBreakTemplateDeclarations: true
+AlignConsecutiveAssignments: true
+# AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+ColumnLimit: 80
+IncludeBlocks: Preserve
+Standard: C++11
+# CaseBlockIndent: Block
+BreakBeforeBraces: Linux
+UseTab: Never
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortLambdasOnASingleLine: All
+AlwaysBreakBeforeMultilineStrings: true
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeTernaryOperators: true
+IndentCaseLabels: true
+BreakBeforeBinaryOperators: true

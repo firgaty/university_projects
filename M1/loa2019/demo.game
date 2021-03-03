@@ -1,0 +1,42 @@
+#10 20
+OOOOOOOOOOOOOOOOOOOO
+O       O          O
+O   +   O          O
+O       O          O
+O       O          O
+O       OOO+OOOOOOOO
+O       O          O
+OOOO+OOOO          O
+O                  O
+OOOOOOOOOOOOOOOOOOOO
+p 3 11
+d 4 11
+d 8 11
+d 4 4
+m 1 17 MON1 2 0
+m 1 9 MON1 2 0
+l 4 4 2 4
+l 4 11 5 11
+l 8 11 7 4
+#10 20
+OOOOOOOOOOOOOOOOOOOO
+O                  O
+O                  O
+O                  O
+OOOOOOOOOOOOOOOOOOOO
+O                  O
+O                  O
+O                  O
+O        x         O
+OOOOOOOOOOOOOOOOOOOO
+p 0 0
+m 1 1 MON1 2 0
+m 1 18 MON1 2 0
+m 3 18 MON1 2 0
+m 3 1 MON1 2 0
+c 2 10 9
+L 0 2 4 1 2 8
+L 1 2 8 0 2 4
+C 0 3 11
+s 0 0 0 0
+S 0 0 0 0 0 0 0 0 0

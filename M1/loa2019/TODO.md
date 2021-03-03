@@ -1,0 +1,21 @@
+# TODO
+
+- [ ] Link Diamond to Door
+- [ ] Link Door to Door/Level
+- [ ] Events
+    - [ ] Board
+    - [ ] Level
+    - [ ] Game
+- [ ] Display
+    - [ ] Board
+        - [ ] Set max size
+    - [ ] Level
+    - [ ] Game
+    - [ ] Area ?
+- [ ] IA
+    - [ ] Implement Basic AI
+    - [ ] Implement other AIs
+- [ ] Test
+    - [ ] Board
+        - [ ] Squares
+        - [ ] Events
